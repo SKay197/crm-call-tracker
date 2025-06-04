@@ -1,12 +1,22 @@
-from flask import Flask, render_template, request, redirect, url_for, Response
+from flask import (
+    Flask,
+    render_template,
+    request,
+    redirect,
+    url_for,
+    Response,
+    jsonify,
+)
 from datetime import datetime
 import sqlite3
 import csv
 import io
+import os
 
 app = Flask(__name__)
 
-DB_NAME = 'database.db'
+# Database file path can be overridden via the DATABASE_FILE environment variable
+DB_NAME = os.environ.get("DATABASE_FILE", "database.db")
 
 # Initialize database
 def init_db():
@@ -34,6 +44,18 @@ def get_call_by_id(call_id):
     call = c.fetchone()
     conn.close()
     return call
+
+# Convert a database row tuple into a dictionary for API responses
+def call_to_dict(row):
+    return {
+        "id": row[0],
+        "name": row[1],
+        "phone": row[2],
+        "time_of_call": row[3],
+        "purpose": row[4],
+        "notes": row[5],
+        "status": row[6],
+    }
 
 # Fetch filtered & searched calls
 def search_calls(keyword=None, status=None):
@@ -171,8 +193,54 @@ def export_csv():
         headers={"Content-Disposition": "attachment;filename=call_logs.csv"}
     )
 
+# ----------- API Endpoints -----------
+
+# Return list of calls in JSON format with optional search and status filters
+@app.route('/api/calls', methods=['GET'])
+def api_get_calls():
+    keyword = request.args.get('search')
+    status = request.args.get('status')
+    calls = search_calls(keyword, status)
+    return jsonify([call_to_dict(c) for c in calls])
+
+
+# Create a new call log via JSON payload
+@app.route('/api/calls', methods=['POST'])
+def api_create_call():
+    data = request.get_json() or {}
+    if not data.get('name') or not data.get('phone'):
+        return jsonify({'error': 'name and phone required'}), 400
+
+    name = data['name']
+    phone = data['phone']
+    time_of_call = datetime.now().strftime('%Y-%m-%d %H:%M')
+    purpose = data.get('purpose', '')
+    notes = data.get('notes', '')
+    status_val = 'New'
+
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute(
+        'INSERT INTO call_logs (name, phone, time_of_call, purpose, notes, status) VALUES (?, ?, ?, ?, ?, ?)',
+        (name, phone, time_of_call, purpose, notes, status_val)
+    )
+    conn.commit()
+    new_id = c.lastrowid
+    conn.close()
+    return jsonify({'id': new_id}), 201
+
+
+# Get a single call log by ID as JSON
+@app.route('/api/calls/<int:call_id>', methods=['GET'])
+def api_get_call(call_id):
+    call = get_call_by_id(call_id)
+    if not call:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify(call_to_dict(call))
+
 # Run the app
 if __name__ == '__main__':
     init_db()
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
 
